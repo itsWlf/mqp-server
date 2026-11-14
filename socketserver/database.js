@@ -6,8 +6,6 @@ const MongoDB = require('./db_mongo');
 const utils = require('./utils');
 let Database;
 
-var util = require('util');
-
 switch (nconf.get('db:dbType')) {
 	case 'level':
 		Database = LevelDB;

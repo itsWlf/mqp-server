@@ -1,5 +1,4 @@
 'use strict'
-const util = require('util');
 let DB;
 const utils = require('./utils');
 
@@ -70,7 +69,7 @@ var fieldsPrivate = [
  */
  
 function removeFields(obj, fields){
-	var updatedObj = util._extend({}, obj);
+	var updatedObj = Object.assign({}, obj);
 	for (var i in fields) {
 		if ( typeof updatedObj[fields[i]] !== 'undefined' ) {
 			delete updatedObj[fields[i]];
@@ -113,11 +112,11 @@ User.prototype.login = function(inEmail, inData, opts, callback){
 		getPlaylists: true
 	};
 	
-	opts = util._extend(defaultOpts, opts);
+	opts = Object.assign(defaultOpts, opts);
 	
 	that.userExists = true;
 	that.email = inEmail;
-	if ( typeof inData === 'object' ) util._extend(that.data, inData);
+	if ( typeof inData === 'object' ) Object.assign(that.data, inData);
 	
 	var reqSent = ( opts.getPlaylists ? this.data.playlists.length : 0 );
 	var reqRec = 0;

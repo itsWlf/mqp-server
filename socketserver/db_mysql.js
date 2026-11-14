@@ -1,7 +1,6 @@
 'use strict';
 //Modules
 const mysql = require('mysql');
-const util = require('util');
 const log = new(require('basic-logger'))({
     showTimestamp: true,
     prefix: "MysqlDB"
@@ -214,7 +213,7 @@ MysqlDB.prototype.getPlaylist = function(pid, callback) {
 
         var pl = new Playlist();
         pl.id = pid;
-        util._extend(pl.data, data[0]);
+        Object.assign(pl.data, data[0]);
 
         that.execute("SELECT `cid` FROM `media` WHERE ? ORDER BY `sort` ASC;", { pid: pid, }, function(err, data){
             data = data.map(function(e){ return e.cid; });
@@ -488,7 +487,7 @@ MysqlDB.prototype.createUser = function(obj, callback) {
         un: null,
         pw: null
     };
-    util._extend(defaultCreateObj, obj);
+    Object.assign(defaultCreateObj, obj);
 
     var inData = defaultCreateObj;
     inData.email = inData.email.toLowerCase();
@@ -579,7 +578,7 @@ MysqlDB.prototype.putUser = function(email, data, callback) {
     callback = callback || function(){};
 
     var newData = {};
-    util._extend(newData, data);
+    Object.assign(newData, data);
 
     var blocked = newData.blocked.map(function(x) { return [data.uid, x]; });
 

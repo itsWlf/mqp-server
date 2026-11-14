@@ -4,9 +4,9 @@ const ws = require('ws');
 const http = require('http');
 const https = require('https');
 const Duration = require('durationjs');
-const request = require('request');
 const extend = require('extend');
-const updateNotifier = require('update-notifier');
+// update-notifier is ESM-only since v6; require(esm) exposes the factory as `.default`
+const updateNotifier = require('update-notifier').default;
 const fs = require('fs-extra');
 const nconf = require('nconf');
 const crypto = require('crypto');
@@ -18,7 +18,7 @@ const Mailer = require('./mail/mailer');
 const YT = require('./YT');
 const Roles = require('./role');
 const log = new (require('basic-logger'))({showTimestamp: true, prefix: "SocketServer"});
-const WebSocketServer = ws.Server;
+const WebSocketServer = ws.WebSocketServer;
 
 
 ws.prototype.sendJSON = function(obj){
@@ -111,7 +111,7 @@ var SocketServer = function(server){
 		addresses: {},
 		canConnect: function(ip){
 //			if (ip == '127.0.0.1') return true;
-			if (ip.indexOf('127.') == 0) return true;
+			if (ip.indexOf('127.') == 0 || ip == '::1' || ip.indexOf('::ffff:127.') == 0) return true;
 
 			if (!this.addresses[ip]) this.addresses[ip] = {
 				conAttempts: [],
@@ -148,7 +148,7 @@ var SocketServer = function(server){
 		canAcceptMessage: function(ip){
 //			if (ip == '127.0.0.1') return true;
 			//OpenShift: localhost starts with 127, but isn't equals the common localhost address
-			if (ip.indexOf('127.') == 0) return true;
+			if (ip.indexOf('127.') == 0 || ip == '::1' || ip.indexOf('::ffff:127.') == 0) return true;
 
 			if (!this.addresses[ip]) this.addresses[ip] = {
 				conAttempts: [],
@@ -187,9 +187,7 @@ var SocketServer = function(server){
 		}
 	}, 5 * 60 * 1000);
 
-	var settings = {
-		autoAcceptConnections : true
-	};
+	var settings = {};
 
 	if (server){
 		settings.server = server;
@@ -231,8 +229,16 @@ var SocketServer = function(server){
 		}
 	}, 6000);
 
-	this.wss.on("connection", function(socket){
-		var ip = (socket.upgradeReq.headers['x-forwarded-for'] || socket.upgradeReq.connection.remoteAddress);
+	this.wss.on("connection", function(socket, req){
+		// ws >= 3 no longer exposes socket.upgradeReq; keep what we need from the upgrade request on the socket
+		socket.remoteAddress = req.socket.remoteAddress;
+		socket.ip = (req.headers['x-forwarded-for'] || socket.remoteAddress);
+		var ip = socket.ip;
+
+		// Without a listener, a protocol error from a client (invalid frame, oversized payload, ...) would be thrown as an uncaught exception
+		socket.on("error", function(err){
+			log.debug(ip + ' socket error: ' + (err && err.message));
+		});
 
 		log.info(ip + ' connected');
 
@@ -297,7 +303,7 @@ var SocketServer = function(server){
 		that.unauthdSockets.add(socket);
 
 		socket.on("close", function(){
-			var ip = (socket.upgradeReq.headers['x-forwarded-for'] || socket.upgradeReq.connection.remoteAddress);
+			var ip = socket.ip;
 
 			log.info(ip + ' disconnected');
 			if(socket.user){
@@ -308,8 +314,11 @@ var SocketServer = function(server){
 		});
 
 
-		socket.on("message", function(data, flags){
-			var ip = (socket.upgradeReq.headers['x-forwarded-for'] || socket.upgradeReq.connection.remoteAddress);
+		socket.on("message", function(data, isBinary){
+			var ip = socket.ip;
+
+			// ws >= 8 passes a Buffer (binaryType 'nodebuffer') for text frames too, never a string
+			data = data.toString();
 
 			log.debug(ip + " sent: " + data);
 
@@ -329,8 +338,8 @@ var SocketServer = function(server){
 				return;
 			}
 
-			//Check if type is set
-			if (!data.type) return;
+			//Check if type is set (`null` is valid JSON too and would otherwise throw here)
+			if (!data || !data.type) return;
 
 			data.data = data.data || {};
 
@@ -1356,7 +1365,7 @@ var SocketServer = function(server){
 						}
 						
 						//Log user's IP address
-						var ip = (socket.upgradeReq.headers['x-forwarded-for'] || socket.upgradeReq.connection.remoteAddress);
+						var ip = socket.ip;
 						DB.logIp(ip, user.uid);
 
 						returnObj.data = {
@@ -1386,29 +1395,37 @@ var SocketServer = function(server){
 							DB.loginUser(data.data, callback);
 					} else {
 						if (nconf.get('room:recaptcha')) {
-							request.post(
-								'https://www.google.com/recaptcha/api/siteverify',
-								{
-									form: {
-										secret: nconf.get('apis:reCaptcha:secret'),
-										response: data.data.captcha,
-										remoteip: socket.upgradeReq.connection.remoteAddress,
-									}
-								},
-								function (error, response, body) {
-									if (!error && response.statusCode == 200) {
-										if(JSON.parse(body).success) {
-											DB.createUser(data.data, callback);
-											return;
-										}
+							// Replaces request.post(url, { form }, cb) (the request package was removed): urlencoded POST,
+							// a network error, non-200 status or unparsable body counts as an invalid captcha
+							fetch('https://www.google.com/recaptcha/api/siteverify', {
+								method: 'POST',
+								body: new URLSearchParams({
+									secret: String(nconf.get('apis:reCaptcha:secret') || ''),
+									response: String(data.data.captcha || ''),
+									remoteip: String(socket.remoteAddress || ''),
+								}),
+								signal: AbortSignal.timeout(15000),
+							}).then(function (response) {
+								if (response.status != 200) return false;
+								return response.json().then(function (body) {
+									return !!(body && body.success);
+								});
+							}).catch(function () {
+								return false;
+							}).then(function (success) {
+								// Leave the promise chain so an exception thrown further down (DB/socket callbacks) is
+								// reported as an uncaught exception like it was from request's callback, not an unhandled rejection
+								process.nextTick(function () {
+									if (success) {
+										DB.createUser(data.data, callback);
+										return;
 									}
 									returnObj.data = {
 										error: 'InvalidCaptcha',
 									};
 									socket.sendJSON(returnObj);
-									return;
-								}
-							);
+								});
+							});
 						} else {
 							DB.createUser(data.data, callback);
 						}
@@ -2981,7 +2998,7 @@ var SocketServer = function(server){
 
 											for(var i in users)
 												if(users[i].user && (data.data.un ? users[i].user.un : users[i].user.uid) == (data.data.un || data.data.uid))
-													return users[i].upgradeReq.headers['x-forwarded-for'] || users[i].upgradeReq.connection.remoteAddress;
+													return users[i].ip;
 
 											return null;
 										})(),
@@ -3012,8 +3029,20 @@ var SocketServer = function(server){
 						updateCheckInterval: 0
 					});
 
+					// update-notifier 7 caches any version difference (also an older registry version) as an
+					// "update"; only report it when the registry version is actually newer, as v1 did
+					var isNewer = function(latest, current){
+						var a = String(latest).split('-')[0].split('.').map(Number);
+						var b = String(current).split('-')[0].split('.').map(Number);
+						for (var k = 0; k < 3; k++){
+							if ((a[k] || 0) != (b[k] || 0)) return (a[k] || 0) > (b[k] || 0);
+						}
+						// Same x.y.z: a release is newer than a prerelease of it
+						return String(current).indexOf('-') > -1 && String(latest).indexOf('-') == -1;
+					};
+
 					returnObj.data = {
-						update: notifier.update,
+						update: (notifier.update && isNewer(notifier.update.latest, notifier.update.current)) ? notifier.update : undefined,
 					};
 					socket.sendJSON(returnObj);
 					break;

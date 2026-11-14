@@ -249,7 +249,7 @@ djqueue.prototype._advance = function(){
 			if (that.currentsong && that.currentsong.duration > 0 || !Roles.checkPermission(that.currentdj.user.role, 'djqueue.playLiveVideos')){
 				that.lasttimer = setTimeout(function(){
 					that.advance(that.currentdj.user.lastdj);
-				}, that.currentsong.duration * 1000);
+				}, Math.min(Math.max(+that.currentsong.duration || 0, 0) * 1000, 2147483647));
 			}
 
 			that.votes = new defaultVoteObj;

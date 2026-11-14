@@ -1,8 +1,7 @@
 'use strict';
 // Modules
-const levelup = require('levelup');
+const { ClassicLevel } = require('classic-level');
 const path = require('path');
-const util = require('util');
 const fs = require('fs');
 const log = new(require('basic-logger'))({
     showTimestamp: true,
@@ -22,27 +21,122 @@ let currentCID = 0;
 const expires = 1000 * 60 * 60 * 24 * nconf.get('loginExpire');
 let usernames = [];
 
+// Same encodings levelup used by default, so databases written by
+// levelup/leveldown stay readable (keys and values are utf8 strings).
+const DB_OPTIONS = { keyEncoding: 'utf8', valueEncoding: 'utf8' };
+
+/*
+ * classic-level is promise based, the rest of the app expects node-style
+ * callbacks. The helpers below bridge the two.
+ *
+ * Callbacks are always invoked through process.nextTick(), i.e. outside of the
+ * promise chain. That way an exception thrown by a callback surfaces as a
+ * regular uncaught exception (like it did with levelup) instead of becoming a
+ * promise rejection or triggering a second invocation of the callback.
+ */
+function rethrow(err) {
+  process.nextTick(() => { throw err; });
+}
+
+function settle(promiseFn, onSuccess, onError) {
+  let promise;
+  try {
+    promise = Promise.resolve(promiseFn());
+  } catch (e) {
+    promise = Promise.reject(e);
+  }
+  promise.then(
+    (val) => { process.nextTick(onSuccess, val); },
+    (err) => { process.nextTick(onError, err); }
+  );
+}
+
+// levelup reported missing keys with an error that had `notFound` set.
+// classic-level resolves with undefined instead, so recreate that error.
+function notFoundError(key) {
+  const err = new Error(`Key not found in database [${key}]`);
+  err.name = 'NotFoundError';
+  err.type = 'NotFoundError';
+  err.code = 'LEVEL_NOT_FOUND';
+  err.notFound = true;
+  err.status = 404;
+  return err;
+}
+
+// Used when a write has no callback: don't lose the error silently
+function logWriteError(err) {
+  log.error(`Database write failed: ${err && err.message ? err.message : err}`);
+}
+
+function dbGet(db, key, callback) {
+  settle(() => db.get(key), (val) => {
+    if (val === undefined) callback(notFoundError(key));
+    else callback(null, val);
+  }, callback);
+}
+
+function dbPut(db, key, val, callback) {
+  callback = callback || function (err) { if (err) logWriteError(err); };
+  settle(() => db.put(key, val), () => { callback(); }, callback);
+}
+
+function dbDel(db, key, callback) {
+  callback = callback || function (err) { if (err) logWriteError(err); };
+  settle(() => db.del(key), () => { callback(); }, callback);
+}
+
+/**
+ * Replacement for levelup's createReadStream(): calls onData({ key, value })
+ * for every entry (in key order) and onEnd() once all entries have been read.
+ * Calling destroy() on the returned object stops the iteration; like with the
+ * old streams, onEnd is not called in that case.
+ */
+function readEntries(db, onData, onEnd) {
+  let destroyed = false;
+  const stream = {
+    destroy() { destroyed = true; },
+  };
+
+  (async () => {
+    // for await closes the iterator when the loop is left, however that happens
+    for await (const [key, value] of db.iterator()) {
+      if (destroyed) break;
+      onData({ key, value });
+      if (destroyed) break;
+    }
+    if (!destroyed && onEnd) onEnd();
+  })().catch(rethrow);
+
+  return stream;
+}
+
 function setupDB(dir, setup, callback) {
   setup = setup || function () {};
   callback = callback || function () {};
 
-  return levelup(dir, null, (err, newdb) => {
-    if (err) {
-      log.error('Could not open db');
-      callback(err);
-      return;
-    }
+  const newdb = new ClassicLevel(dir, DB_OPTIONS);
 
-    newdb.get('setup', (err) => {
+  // Operations issued before the db finished opening are queued by classic-level
+  settle(() => newdb.open(), () => {
+    dbGet(newdb, 'setup', (err) => {
       if (err && err.notFound) {
-        newdb.put('setup', 1);
+        dbPut(newdb, 'setup', 1);
         setup(newdb);
         callback(null, newdb);
       } else {
         callback(null, newdb);
       }
     });
+  }, (err) => {
+    // classic-level reports "Database failed to open" and puts the LevelDB
+    // error (e.g. "IO error: lock ...") in err.cause. Include it in the message
+    // like levelup's OpenError did, since the callers only print `${err}`.
+    if (err && err.cause && err.cause.message) err.message += `: ${err.cause.message}`;
+    log.error(`Could not open db ${dir}: ${(err && err.message) || err}`);
+    callback(err);
   });
+
+  return newdb;
 }
 
 function LevelDB(callback) {
@@ -59,14 +153,14 @@ function LevelDB(callback) {
       (newdb) => {
         currentPID = 1;
         log.debug('PIDCOUNTER set to 1');
-        newdb.put('PIDCOUNTER', 1);
+        dbPut(newdb, 'PIDCOUNTER', 1);
       },
 
       // Callback
       (err, db) => {
         if (err) log.error(`Could not open PlaylistDB: ${err}`);
         if (currentPID !== 0) return;
-        db.get('PIDCOUNTER', (err, val) => {
+        dbGet(db, 'PIDCOUNTER', (err, val) => {
           if (err) {
             throw new Error('Cannot get PIDCOUNTER from UserDB.  Might be corrupt');
           }
@@ -96,7 +190,7 @@ function LevelDB(callback) {
             function (newdb) {
                 currentUID = 1;
                 log.debug('UIDCOUNTER set to 1');
-                newdb.put('UIDCOUNTER', 1);
+                dbPut(newdb, 'UIDCOUNTER', 1);
             },
 
             // Callback
@@ -106,29 +200,25 @@ function LevelDB(callback) {
                 }
                 if (currentUID != 0) return;
 
-                newdb.get('UIDCOUNTER', function (err, val) {
+                dbGet(newdb, 'UIDCOUNTER', function (err, val) {
                     if (err) {
                         throw new Error('Cannot get UIDCOUNTER from UserDB. Might be corrupt');
                     }
                     currentUID = parseInt(val);
                 });
 
-                newdb.createReadStream()
-                    .on('data', function (data) {
-                        if (data.key.indexOf('@') == -1) return;
-                        try {
-                            var user = JSON.parse(data.value);
-                        } catch (e) {
-                            return;
-                        }
+                readEntries(newdb, function (data) {
+                    if (data.key.indexOf('@') == -1) return;
+                    try {
+                        var user = JSON.parse(data.value);
+                    } catch (e) {
+                        return;
+                    }
 
-                        addUsername(user.un);
-                        user.lastdj = false;
-                        newdb.put(data.key, JSON.stringify(user));
-                    })
-                    .on('end', function () {
-                        return false;
-                    });
+                    addUsername(user.un);
+                    user.lastdj = false;
+                    dbPut(newdb, data.key, JSON.stringify(user));
+                });
             });
 
     // ChatDB
@@ -139,7 +229,7 @@ function LevelDB(callback) {
             function (newdb) {
                 currentCID = 1;
                 log.debug('CIDCOUNTER set to 1');
-                newdb.put('CIDCOUNTER', 1);
+                dbPut(newdb, 'CIDCOUNTER', 1);
             },
 
             // Callback
@@ -149,7 +239,7 @@ function LevelDB(callback) {
                 }
                 if (currentCID != 0) return;
 
-                newdb.get('CIDCOUNTER', function (err, val) {
+                dbGet(newdb, 'CIDCOUNTER', function (err, val) {
                     if (err) {
                         throw new Error('Cannot get CIDCOUNTER from PmDB. Might be corrupt');
                     }
@@ -197,7 +287,7 @@ function LevelDB(callback) {
 LevelDB.prototype.getJSON = function (db, key, callback) {
     callback = callback || function () {};
 
-    db.get(key, function (err, val) {
+    dbGet(db, key, function (err, val) {
         if (val) {
             try {
                 val = JSON.parse(val);
@@ -220,8 +310,8 @@ LevelDB.prototype.getJSON = function (db, key, callback) {
  * @return {Object} this
  */
 LevelDB.prototype.putJSON = function (db, key, val, callback) {
-    callback = callback || function () {};
-    db.put(key, JSON.stringify(val), callback);
+    // Without a callback, write errors are logged by dbPut
+    dbPut(db, key, JSON.stringify(val), callback);
     return this;
 };
 
@@ -237,7 +327,7 @@ LevelDB.prototype.getPlaylist = function (pid, callback) {
 
         var pl = new Playlist();
         pl.id = pid;
-        util._extend(pl.data, data);
+        Object.assign(pl.data, data);
 
         callback(err, pl);
     });
@@ -250,7 +340,7 @@ LevelDB.prototype.createPlaylist = function (owner, name, callback) {
 
     var pl = new Playlist();
     pl.id = currentPID++;
-    this.PlaylistDB.put('PIDCOUNTER', currentPID);
+    dbPut(this.PlaylistDB, 'PIDCOUNTER', currentPID);
     pl.data.created = Date.now();
     pl.data.owner = owner;
     pl.data.name = name.substr(0, 100);
@@ -260,7 +350,7 @@ LevelDB.prototype.createPlaylist = function (owner, name, callback) {
 };
 
 LevelDB.prototype.deletePlaylist = function (pid, callback) {
-    this.PlaylistDB.del(pid.toString(), callback);
+    dbDel(this.PlaylistDB, pid.toString(), callback);
 };
 
 LevelDB.prototype.putPlaylist = function (pid, data, callback) {
@@ -303,7 +393,7 @@ LevelDB.prototype.createUser = function (obj, callback) {
         un: null,
         pw: null
     };
-    util._extend(defaultCreateObj, obj);
+    Object.assign(defaultCreateObj, obj);
 
     var inData = defaultCreateObj;
     inData.email = inData.email.toLowerCase();
@@ -332,7 +422,7 @@ LevelDB.prototype.createUser = function (obj, callback) {
         var user = new User();
 
         user.data.uid = currentUID++;
-        that.UserDB.put('UIDCOUNTER', currentUID);
+        dbPut(that.UserDB, 'UIDCOUNTER', currentUID);
         user.data.un = inData.un;
         user.data.pw = inData.pw;
         user.data.created = Date.now();
@@ -406,7 +496,7 @@ LevelDB.prototype.deleteUser = function (email, callback) {
 	this.getUser(email, function (err, user) {
 		if (err) { if (callback) callback(err); return; }
 
-        that.UserDB.del(email);
+        dbDel(that.UserDB, email);
 
 		callback(null, true);
 	});
@@ -432,54 +522,66 @@ LevelDB.prototype.getUserByUid = function (uid, opts, callback) {
     var isArray = Array.isArray(uid);
     var out = {};
     var len = 0;
+    // Logins can finish after the last entry was read (they load playlists),
+    // so only report missing users once all of them have called back.
+    var pending = 0;
+    var ended = false;
 
-    var stream = this.UserDB.createReadStream()
-        .on('data', function (data) {
-            var obj = {};
+    function finish() {
+        if (done || !ended || pending > 0) return;
+        done = true;
 
-            try {
-                obj = JSON.parse(data.value);
-            } catch (e) {
-                return;
+        if (typeof uid === 'number') {
+            callback('UserNotFound');
+        } else if (isArray) {
+            console.log('ACTUAL:' + len + '; EXPECTED: ' + uid.length);
+            callback('SomeUsersNotFound', out);
+        }
+    }
+
+    var stream = readEntries(this.UserDB, function (data) {
+        var obj = {};
+
+        try {
+            obj = JSON.parse(data.value);
+        } catch (e) {
+            return;
+        }
+
+        if (isArray) {
+            if (uid.indexOf(obj.uid) > -1) {
+                var user = new User();
+
+                pending++;
+                user.login(data.key, obj, opts, function () {
+                    pending--;
+                    out[obj.uid] = user;
+                    len++;
+
+                    if (len == uid.length) {
+                        done = true;
+                        stream.destroy();
+                        callback(null, out);
+                    } else {
+                        finish();
+                    }
+                });
             }
+        } else {
+            if (obj.uid == uid) {
+                done = true;
+                stream.destroy();
+                var user = new User();
 
-            if (isArray) {
-                if (uid.indexOf(obj.uid) > -1) {
-                    var user = new User();
-
-                    user.login(data.key, obj, opts, function () {
-                        out[obj.uid] = user;
-                        len++;
-
-                        if (len == uid.length) {
-                            done = true;
-                            stream.destroy();
-                            callback(null, out);
-                        }
-                    });
-                }
-            } else {
-                if (obj.uid == uid) {
-                    done = true;
-                    stream.destroy();
-                    var user = new User();
-
-                    user.login(data.key, obj, opts, function () {
-                        callback(null, user);
-                    });
-                }
+                user.login(data.key, obj, opts, function () {
+                    callback(null, user);
+                });
             }
-        })
-        .on('end', function () {
-            if (!done) {
-                if (typeof uid === 'number') {
-                    callback('UserNotFound');
-                } else if (isArray) {
-                    console.log('ACTUAL:' + len + '; EXPECTED: ' + uid.length);
-                    callback('SomeUsersNotFound', out);
-                }
-            }
-        });
+        }
+    }, function () {
+        ended = true;
+        finish();
+    });
 };
 
 LevelDB.prototype.getUserByName = function (name, opts, callback) {
@@ -490,31 +592,29 @@ LevelDB.prototype.getUserByName = function (name, opts, callback) {
         opts = {};
     }
 
-    var stream = this.UserDB.createReadStream()
-        .on('data', function (data) {
-            var obj = {};
+    var stream = readEntries(this.UserDB, function (data) {
+        var obj = {};
 
-            try {
-                obj = JSON.parse(data.value);
-            } catch (e) {
-                return;
-            }
+        try {
+            obj = JSON.parse(data.value);
+        } catch (e) {
+            return;
+        }
 
-            if (obj.un && obj.un.toLowerCase() == name.toString().toLowerCase()) {
-                done = true;
+        if (obj.un && obj.un.toLowerCase() == name.toString().toLowerCase()) {
+            done = true;
 
-                stream.destroy();
-                var user = new User();
+            stream.destroy();
+            var user = new User();
 
-                user.login(data.key, obj, opts, function () {
-                    if (callback) callback(null, user);
-                });
-            }
-        })
-        .on('end', function () {
-            if (!done && callback)
-                callback('UserNotFound');
-        });
+            user.login(data.key, obj, opts, function () {
+                if (callback) callback(null, user);
+            });
+        }
+    }, function () {
+        if (!done && callback)
+            callback('UserNotFound');
+    });
 };
 
 LevelDB.prototype.userEmailExists = function (key, callback) {
@@ -574,8 +674,7 @@ LevelDB.prototype.getConversations = function (uid, callback) {
     var uids;
     uid = uid.toString();
 
-    this.PmDB.createReadStream()
-        .on('data', function (data) {
+    readEntries(this.PmDB, function (data) {
             if (data.key.indexOf(':') == -1 || (uids = data.key.split(':')).indexOf(uid) == -1) return;
 
             try {
@@ -599,8 +698,7 @@ LevelDB.prototype.getConversations = function (uid, callback) {
                 messages: [convo.pop()],
                 unread,
             };
-        })
-        .on('end', function () {
+        }, function () {
             var uids = Object.keys(out).map(function (e) { return parseInt(e); });
 
             if (uids.length > 0) {
@@ -617,7 +715,6 @@ LevelDB.prototype.getConversations = function (uid, callback) {
             } else {
                 callback(null, out);
             }
-            return false;
         });
 };
 
@@ -659,7 +756,12 @@ LevelDB.prototype.getIpHistory = function (uid, callback) {
           callback(err);
         }
         else {
-          callback(null, data.sort(function (a, b) { return a.address > b.address; }).reverse().filter(function (e, i, a) { return i == 0 || a[i - 1].address != e.address; }).sort(function (a, b) { return a.time < b.time; }));
+          // Comparators have to return a number: boolean results are not sorted by current V8 versions
+          callback(null, data
+            .sort(function (a, b) { return a.address > b.address ? 1 : (a.address < b.address ? -1 : 0); })
+            .reverse()
+            .filter(function (e, i, a) { return i == 0 || a[i - 1].address != e.address; })
+            .sort(function (a, b) { return a.time < b.time ? 1 : (a.time > b.time ? -1 : 0); }));
         }
     });
 };

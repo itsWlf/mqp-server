@@ -1,7 +1,6 @@
 // API reference: https://developers.soundcloud.com/docs/api/reference#track
 
 const https = require('https');
-const util = require('util');
 const log = new (require('basic-logger'))({showTimestamp: true, prefix: "SC"});
 const querystring = require('querystring');
 const nconf = require('nconf');
@@ -91,7 +90,7 @@ SC.prototype.getTrack = function(inCid, callback){
 				
 				queryTrack(tempArr, function( err, data, len ){
 					if (err){callback('APIProblem'); return;}
-					util._extend(out, data);
+					Object.assign(out, data);
 					returned++;
 					
 					if (requested == returned){
@@ -324,7 +323,7 @@ SC.prototype.removeThumbs = function(inData){
 	}
 	
 	for (var i in inData){
-		out[i] = util._extend({}, inData[i]);
+		out[i] = Object.assign({}, inData[i]);
 		delete out[i].artwork_url;
 	}
 	

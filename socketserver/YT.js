@@ -1,5 +1,4 @@
 const https = require('https');
-const util = require('util');
 const log = new (require('basic-logger'))({showTimestamp: true, prefix: "YT"});
 const querystring = require('querystring');
 const Duration = require("durationjs");
@@ -115,7 +114,7 @@ YT.prototype.getVideo = function(inCid, callback){
 					return;
 				}
 				
-				util._extend(out, data);
+				Object.assign(out, data);
 				
 				if(++returned == requested){
 					callback(null, out);
@@ -186,7 +185,7 @@ YT.prototype.removeThumbs = function(inData){
 	}
 	
 	for (var i in inData){
-		out[i] = util._extend({}, inData[i]);
+		out[i] = Object.assign({}, inData[i]);
 		delete out[i].thumbnail;
 	}
 	

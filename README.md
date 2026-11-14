@@ -16,7 +16,7 @@ The base for creating a self-hosted pad.
 1. Make sure you have installed [NodeJS](https://nodejs.org/en/download/) on the hosting computer with version 26 (current LTS) or later.
 2. Download the [latest stable version](https://github.com/musiqpad/mqp-server/releases/latest)
 3. Unzip it in the location you want to install
-4. Open a terminal and `npm install --production` it
+4. Open a terminal and `npm install --omit=dev` it
 5. Start the server by running `npm start`
 6. If everything went well, there should be no error messages!
 

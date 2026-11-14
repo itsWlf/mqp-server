@@ -1,4 +1,3 @@
-const util = require('util');
 const DB = require('./database');
 const YT = require('./YT');
 const log = new (require('basic-logger'))({showTimestamp: true, prefix: "Playlist"});
@@ -36,7 +35,7 @@ var fieldsNotSaved = [
  */
  
 function removeFields(obj, fields){
-	var updatedObj = util._extend({}, obj);
+	var updatedObj = Object.assign({}, obj);
 	for (var i in fields) {
 		if ( typeof updatedObj[fields[i]] !== 'undefined' ) {
 			delete updatedObj[fields[i]];
@@ -216,7 +215,7 @@ Playlist.prototype.save = function(callback){
 
 Playlist.prototype.del = function(){
 	DB.deletePlaylist(this.id);
-	this.data = util._extend({}, defaultObj);
+	this.data = Object.assign({}, defaultObj);
 	this.id = null;
 };
 
@@ -225,7 +224,7 @@ Playlist.prototype.makeDbObj = function(){
 };
 
 Playlist.prototype.makeClientObj = function(callback){
-	var tempPlaylist = util._extend({}, this.data);
+	var tempPlaylist = Object.assign({}, this.data);
 	tempPlaylist.content = [];
 	tempPlaylist.num = this.data.content.length;
 	return removeFields(tempPlaylist, fieldsPrivate);

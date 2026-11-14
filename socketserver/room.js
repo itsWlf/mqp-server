@@ -17,6 +17,28 @@ const DefaultDBObj = function () {
 };
 
 
+// A WebSocket close reason may not exceed 123 bytes. ws 1 did not check this (an oversized close frame
+// is a protocol error for browsers, so the client saw no reason at all); ws 8 throws a RangeError instead.
+// The ban reason is capped at 50 chars, but multi-byte/escaped chars can still overflow, so trim it to fit.
+function makeBanCloseReason(restrictObj) {
+	const make = reason => JSON.stringify({
+		type: 'banned',
+		data: {
+			end: restrictObj.end,
+			reason
+		}
+	});
+	let out = make(restrictObj.reason);
+	if (typeof restrictObj.reason !== 'string') return out;
+
+	const chars = Array.from(restrictObj.reason);
+	while (chars.length > 0 && Buffer.byteLength(out) > 123) {
+		chars.pop();
+		out = make(`${chars.join('')}...`);
+	}
+	return out;
+}
+
 class Room {
 	constructor(socketServer, options) {
 		const that = this;
@@ -274,13 +296,7 @@ class Room {
 			// Check if user is online
 			if (userSock && restrictObj.type === 'BAN') {
 				that.removeUser(userSock);
-				userSock.close(1000, JSON.stringify({
-					type: 'banned',
-					data: {
-						end: restrictObj.end,
-						reason: restrictObj.reason
-					}
-				}));
+				userSock.close(1000, makeBanCloseReason(restrictObj));
 			}
 
 			if (callback) callback(null);
@@ -643,6 +659,8 @@ class Room {
 		};
 		try {
 			const postReq = https.request(postOptions, response => {
+				// Drain the body so the keep-alive socket is released back to the agent
+				response.resume();
 				if (response.statusCode < 200 || response.statusCode > 299) {
 					console.log(`Request Failed with Status Code: ${response.statusCode}`);
 				}
@@ -655,7 +673,7 @@ class Room {
 			});
 			postReq.setTimeout(3000, () => {
 				console.log('Lobby Update timed out.');
-				postReq.abort();
+				postReq.destroy();
 			});
 			postReq.end();
 		} catch (e) { }
