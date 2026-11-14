@@ -13,6 +13,7 @@ const crypto = require('crypto');
 
 //Files
 const DB = require("./database");
+const utils = require('./utils');
 const Room = require('./room');
 const Mailer = require('./mail/mailer');
 const YT = require('./YT');

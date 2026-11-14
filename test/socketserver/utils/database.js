@@ -1,4 +1,5 @@
-const test = require('ava');
+// ava is ESM-only, require() gets the module namespace
+const test = require('ava').default;
 const DBUtils = require('./../../../socketserver/utils/index').db;
 
 function validateEmail(t, input, expected) {

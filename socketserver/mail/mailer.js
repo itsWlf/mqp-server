@@ -1,42 +1,52 @@
 'use strict';
 const nodemailer = require('nodemailer');
-const xoauth2 = require('xoauth2');
 const fs = require('fs-extra');
 const nconf = require('nconf');
 const ejs = require('ejs');
 
+// Builds the nodemailer transport options for the configured transport mode
+// from room:mail:options. Works on a copy so nothing is written back into the
+// nconf store (and from there into config.hjson on the next nconf.save()).
+function transportOptions(transport, configOptions) {
+	const options = JSON.parse(JSON.stringify(configOptions || {}));
+
+	// nodemailer 2 defaulted to port 25 for plain SMTP, newer versions use 587
+	if (options.port === undefined && !options.service && !options.url && !options.secure) {
+		options.port = 25;
+	}
+
+	switch (transport) {
+		case 'smtp':
+			return options;
+		case 'xoauth': {
+			// The xoauth2 module is gone, nodemailer has OAuth2 built in. Keep accepting
+			// the old `auth: { xoauth: { user, clientId, ... } }` layout from the config.
+			const auth = options.auth || {};
+			if (auth.xoauth) {
+				options.auth = Object.assign({ type: 'OAuth2' }, auth.xoauth);
+			} else if (!auth.type) {
+				options.auth = Object.assign({ type: 'OAuth2' }, auth);
+			}
+			return options;
+		}
+		case 'direct': {
+			const domain = nconf.get('room:mail:sender').split('@')[1];
+			options.name = domain;
+			return options;
+		}
+		default:
+			return null;
+	}
+}
+
 class Mailer {
 	constructor() {
-		const options = nconf.get('room:mail:options');
 		const self = this;
 
 		if (nconf.get('room:allowrecovery') || nconf.get('room:mail:confirmation')) {
-			switch (nconf.get('room:mail:transport')) {
-				case 'smtp': {
-					self.transporter = nodemailer.createTransport(options);
-					break;
-				}
-				case 'xoauth': {
-					const xoauth = xoauth2.createXOAuth2Generator({
-						user: options.auth.xoauth.user,
-						clientId: options.auth.xoauth.clientId,
-						clientSecret: options.auth.xoauth.clientSecret,
-						refreshToken: options.auth.xoauth.refreshToken,
-						accessToken: options.auth.xoauth.accessToken
-					});
-					options.auth.xoauth = xoauth;
-					self.transporter = nodemailer.createTransport(options);
-					break;
-				}
-				case 'direct': {
-					const domain = nconf.get('room:mail:sender').split('@')[1];
-					options.name = domain;
-					self.transporter = nodemailer.createTransport(options);
-					break;
-				}
-				default: {
-					break;
-				}
+			const options = transportOptions(nconf.get('room:mail:transport'), nconf.get('room:mail:options'));
+			if (options) {
+				self.transporter = nodemailer.createTransport(options);
 			}
 		}
 	}

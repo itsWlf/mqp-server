@@ -59,12 +59,12 @@ process.on('uncaughtException', (err) => {
 });
 
 process.on('exit', socketServer.gracefulExit);
-process.on('SIGINT', socketServer.gracefulExit);
+process.on('SIGINT', () => socketServer.gracefulExit());
 
 if (process.argv[2] === '--daemon') {
   if (fileExistsSync(`${__dirname}/pidfile`)) {
     try {
-      const	pid = fs.readFileSync(`${__dirname}/pidfile`, { encoding: 'utf-8' });
+      const	pid = parseInt(fs.readFileSync(`${__dirname}/pidfile`, { encoding: 'utf-8' }), 10);
       process.kill(pid, 0);
       process.exit();
     } catch (e) {
@@ -72,7 +72,7 @@ if (process.argv[2] === '--daemon') {
     }
   }
 
-  fs.writeFile(`${__dirname}/pidfile`, process.pid);
+  fs.writeFileSync(`${__dirname}/pidfile`, String(process.pid));
 }
 
 function fileExistsSync(path) {

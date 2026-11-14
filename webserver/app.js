@@ -43,9 +43,37 @@ app.set('view engine', 'html');
 app.set('views', `${__dirname}/public`);
 app.engine('html', ejs.renderFile);
 app.use(compression());
-app.use(helmet.frameguard());
-app.use(helmet.xssFilter());
-app.use(helmet.hidePoweredBy());
+// Helmet's defaults (CSP, X-Frame-Options: SAMEORIGIN, no X-Powered-By, nosniff, ...)
+// adjusted so the bundled front-end keeps working: it pulls scripts from CDNs,
+// YouTube, reCAPTCHA, Facebook and the operator's room.scripts URLs (http or https),
+// uses inline event handlers in chat HTML, shows images posted by users from any host,
+// fetches emote lists from third party APIs, embeds YouTube/lounge iframes and opens a
+// websocket to the socket server, which normally runs on a different port.
+app.use(helmet({
+	contentSecurityPolicy: {
+		directives: {
+			'script-src': ["'self'", "'unsafe-eval'", 'http:', 'https:'],
+			'script-src-attr': ["'unsafe-inline'"],
+			'style-src': ["'self'", "'unsafe-inline'", 'http:', 'https:'],
+			'font-src': ["'self'", 'data:', 'http:', 'https:'],
+			'img-src': ['*', 'data:', 'blob:'],
+			'media-src': ['*', 'data:', 'blob:'],
+			'connect-src': ['*', 'ws:', 'wss:'],
+			'frame-src': ["'self'", 'http:', 'https:'],
+			// Would turn the ws:// socket connection of a non-SSL pad into wss://
+			'upgrade-insecure-requests': null,
+		},
+	},
+	// Keep window.opener for popups the page opens (Facebook login)
+	crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
+	// Pad assets are public and were embeddable from other sites before
+	crossOriginResourcePolicy: { policy: 'cross-origin' },
+	// YouTube's embedded player refuses to play without a Referer header
+	referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+	// Not sent before; HSTS would keep browsers on https for a year even if the
+	// operator turns useSSL off again
+	strictTransportSecurity: false,
+}));
 
 app.get(['/', '/index.html'], (req, res) => {
 	res.render('index', {

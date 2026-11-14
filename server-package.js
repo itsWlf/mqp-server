@@ -1,6 +1,5 @@
 var childProcess = require('child_process');
 var psTree = require('ps-tree');
-var forever = require('forever');
 var log = new(require('basic-logger'))({
     showTimestamp: true,
     prefix: "ServerContainer"
@@ -27,11 +26,24 @@ var server = function (params) {
 
 	this.start = function() {
     if(this.settings.config) {
-      fs.writeFileSync('./config.hjson', this.settings.config, 'utf8');
+      var config = this.settings.config;
+      // fs no longer coerces objects, so serialize a config passed as an object
+      if (typeof config !== 'string' && !Buffer.isBuffer(config)) config = JSON.stringify(config, null, 2);
+      fs.writeFileSync('./config.hjson', config, 'utf8');
     }
 		if (this.settings.forever.enabled) {
-			forever.load(this.settings.forever.options);
-			that.pid = forever.start('./start.js');
+			// Built-in replacement for forever: keep start.js alive by
+			// respawning it whenever it exits, until stop() is called.
+			// (forever.options is still accepted but no longer used.)
+			that.stopped = false;
+			(function spawn() {
+				that.proc = runScript('./start.js', function (err) {
+					if (that.stopped) return;
+					log.error('start.js ' + (err ? 'failed to start (' + err.message + ')' : 'exited') + ', restarting');
+					that.restartTimer = setTimeout(spawn, 1000);
+				});
+				that.pid = that.proc.pid;
+			})();
 		}
 		else {
 			that.proc = runScript('./start.js', function (err) {
@@ -46,12 +58,11 @@ var server = function (params) {
 
 	function stopServer() {
 		if (that.settings.forever.enabled) {
-			forever.stop();
+			that.stopped = true;
+			clearTimeout(that.restartTimer);
 		}
-		else {
-			that.proc.kill('SIGINT');
-			//kill(that.pid);
-		}
+		that.proc.kill('SIGINT');
+		//kill(that.pid);
 		log.info('Stopping Server Container');
 	}
 }

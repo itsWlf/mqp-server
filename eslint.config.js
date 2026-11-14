@@ -29,15 +29,29 @@ module.exports = [
 			'no-useless-escape': 'warn',
 			'no-prototype-builtins': 'warn',
 			'guard-for-in': 'warn',
+			// Pre-existing patterns in the legacy code base: reported, not blocking
+			'no-redeclare': 'warn',
+			'no-fallthrough': 'warn',
+			'no-case-declarations': 'warn',
+			'no-setter-return': 'warn',
+			'no-useless-assignment': 'warn',
+			'no-constant-binary-expression': 'warn',
+			'valid-typeof': 'warn',
+			'preserve-caught-error': 'warn',
 		},
 	},
 	{
 		files: ['webserver/public/**/*.js'],
+		rules: {
+			'no-undef': 'warn',
+		},
 		languageOptions: {
 			sourceType: 'script',
 			globals: {
 				...globals.browser,
 				...globals.jquery,
+				// Loaded from third-party script tags
+				FB: 'readonly',
 			},
 		},
 	},
