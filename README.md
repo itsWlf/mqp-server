@@ -13,7 +13,7 @@ The base for creating a self-hosted pad.
 
 ## Quick Start Install
 
-1. Make sure you have installed [NodeJS](https://nodejs.org/en/download/) on the hosting computer with version 4.0.0 or later.
+1. Make sure you have installed [NodeJS](https://nodejs.org/en/download/) on the hosting computer with version 26 (current LTS) or later.
 2. Download the [latest stable version](https://github.com/musiqpad/mqp-server/releases/latest)
 3. Unzip it in the location you want to install
 4. Open a terminal and `npm install --production` it
@@ -26,7 +26,7 @@ If you want to start musiqpad using an application manager like forever, start t
 
 ## Deploying musiqpad using NPM
 
-1. Make sure you have installed NodeJS on the hosting computer with version 4.0.0 or later.
+1. Make sure you have installed NodeJS on the hosting computer with version 26 (current LTS) or later.
 2. Run `npm install mqp-server` in your chosen directory.
 3. Copy the `serverconfig.example.js` to create the file `serverconfig.js` and make sure this is located in the root musiqpad folder.
 4. Create a javascript file in your directory called 'start.js' and inside the file put:
