@@ -218,6 +218,13 @@ div.minicolors{
 .lib-sng:hover {
 	background: rgba(167,125,194,0.2);
 }
+.lib-song-list .lib-sng {
+	-webkit-user-select: none;
+	user-select: none;
+}
+.lib-sng.selected, .lib-sng.selected:hover {
+	background: rgba(167,125,194,0.5);
+}
 .lib-history {
 	color: #F46B40;
 }

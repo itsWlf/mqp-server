@@ -1992,9 +1992,18 @@ var SocketServer = function(server){
 								break;
 							}
 							//Remove all duplicate CIds
-							data.data.cid.filter(function(e, i, a){
-								return a.indexOf(e) != i && pl.content.indexOf(e) == -1;
+							data.data.cid = data.data.cid.filter(function(e, i, a){
+								return typeof e === 'string' && a.indexOf(e) == i && pl.data.content.indexOf(e) == -1;
 							});
+
+							if (data.data.cid.length == 0) {
+								returnObj.data = {
+									error: 'SongAlreadyInPlaylist'
+								};
+								socket.sendJSON(returnObj);
+
+								break;
+							}
 
 							//Add data to the playlist
 							for (var i = 0, len = data.data.cid.length; i < len; i++) {
@@ -2088,7 +2097,8 @@ var SocketServer = function(server){
 							break;
 						}
 
-						pl.moveSong(data.data.cid, data.data.index, function(err, pl){
+						// cid may be an array to move several songs as one block
+						pl[Array.isArray(data.data.cid) ? 'moveSongs' : 'moveSong'](data.data.cid, data.data.index, function(err, pl){
 							if (err){
 								returnObj.data = {
 									error: err

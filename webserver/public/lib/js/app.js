@@ -73,13 +73,24 @@
 				}
 			});
 
+			MP.songSelection.sync();
+
 			if (MP.session.viewedPl && MP.models.viewedPlContents.length){
 				var $song = $('.lib-sng');
 
 				$song.draggable({
 					appendTo: 'div.library',
 					helper: function(){
-						return $(this).clone().css({'width': $(this).css('width'), 'font-weight': 'bold'});
+						var $helper = $(this).clone().css({'width': $(this).css('width'), 'font-weight': 'bold'});
+						var dragged = MP.songSelection.dragged($(this).attr('data-cid'));
+
+						// Dragging a whole selection: one row standing in for all of them
+						if (dragged.length > 1){
+							$helper.find('.text').text(dragged.length + ' tracks');
+							$helper.find('.dur').text('');
+						}
+
+						return $helper;
 					},
 					opacity: 0.7,
 					zIndex: 100000000,
@@ -89,6 +100,10 @@
 					cursorAt: { top: 10, left: 10 },
 					refreshPositions: true,
 					start: function(){
+						// Dragging a song that isn't part of the selection selects just that song
+						if (!MP.songSelection.isSelected($(this).attr('data-cid')))
+							MP.songSelection.click($(this).attr('data-cid'));
+
 						$('.lib-fdr:not([data-pid=' + MP.session.viewedPl + '])').droppable({
 							accept: '.lib-sng',
 							hoverClass: 'draghover',
@@ -96,6 +111,17 @@
 							drop: function(e, ui){
 								var pid = $(this).attr('data-pid');
 								var cid = $(ui.draggable).attr('data-cid');
+								var dragged = MP.songSelection.dragged(cid);
+
+								// Several songs: add them in one request, keeping their order
+								if (dragged.length > 1){
+									MP.playlistAdd(pid, dragged.reverse(), 'top', function(err){
+										// The response doesn't keep the order, so reload the list
+										if (!err) MP.getPlaylistContents(pid);
+									});
+									return;
+								}
+
 								MP.playlistAdd(pid, cid, 'top', function(err, data){
 									if(err == "SongAlreadyInPlaylist"){
 										MP.makeConfirmModal({
@@ -171,7 +197,9 @@
 						var $songDrop = $('.lib-sng-drop');
 
 						if (!$songDrop.is(':hidden')){
-							MP.playlistMove(MP.session.viewedPl, ui.helper.attr('data-cid'), $('.lib-sng-drop').attr('data-pos'));
+							var dragged = MP.songSelection.dragged(ui.helper.attr('data-cid'));
+
+							MP.playlistMove(MP.session.viewedPl, (dragged.length > 1 ? dragged : dragged[0]), $('.lib-sng-drop').attr('data-pos'));
 						}
 						$('.lib-fdr:not([data-pid=' + MP.session.viewedPl + '])').droppable('destroy');
 						$('.lib-sng-drop').remove();
@@ -202,6 +230,74 @@
 				$('.btn-stream div').addClass('mdi-video-off');
 			}else{
 				$('.btn-stream div').addClass('mdi-video');
+			}
+		},
+		// Songs selected in the playlist that is being viewed (click, ctrl+click, shift+click)
+		songSelection: {
+			pid: null,
+			cids: [],
+			anchor: null, // Song a shift+click range starts from
+
+			// CIDs of the viewed playlist, in playlist order
+			order: function(){
+				var pl = (MP.user && MP.user.playlists && MP.session.viewedPl ? MP.user.playlists[MP.session.viewedPl] : null);
+
+				return (pl && pl.content ? pl.content : []).map(function(a){ return a.cid; });
+			},
+			isSelected: function(cid){
+				return this.cids.indexOf(cid) != -1;
+			},
+			// What a drag of this song moves: the whole selection if the song is part of it
+			dragged: function(cid){
+				var that = this;
+
+				if (!this.isSelected(cid)) return [ cid ];
+
+				return this.order().filter(function(a){ return that.isSelected(a); });
+			},
+			click: function(cid, ctrl, shift){
+				var order = this.order();
+
+				if (order.indexOf(cid) == -1) return;
+
+				if (shift && this.anchor !== null && order.indexOf(this.anchor) != -1){
+					var from = order.indexOf(this.anchor);
+					var to = order.indexOf(cid);
+					var range = order.slice(Math.min(from, to), Math.max(from, to) + 1);
+
+					// ctrl+shift adds the range to what is already selected
+					this.cids = (ctrl ? this.cids.filter(function(a){ return range.indexOf(a) == -1; }) : []).concat(range);
+				} else if (ctrl){
+					if (this.isSelected(cid))
+						this.cids = this.cids.filter(function(a){ return a != cid; });
+					else
+						this.cids.push(cid);
+
+					this.anchor = cid;
+				} else {
+					this.cids = [ cid ];
+					this.anchor = cid;
+				}
+
+				this.sync();
+			},
+			// Drops songs that are gone and puts the 'selected' class on the rows
+			sync: function(){
+				var order = this.order();
+				var that = this;
+
+				if (this.pid != MP.session.viewedPl){
+					this.pid = MP.session.viewedPl;
+					this.cids = [];
+					this.anchor = null;
+				}
+
+				this.cids = this.cids.filter(function(a){ return order.indexOf(a) != -1; });
+				if (order.indexOf(this.anchor) == -1) this.anchor = null;
+
+				$('.lib-song-list .lib-sng').each(function(){
+					$(this).toggleClass('selected', that.isSelected($(this).attr('data-cid')));
+				});
 			}
 		},
 		models: {
@@ -3371,6 +3467,63 @@
 			var content = MP.user.playlists[pid].content;
 			var ind = null;
 
+			// Several songs: they are moved together, keeping the order they have in the playlist
+			if (Array.isArray(cid)){
+				// New order of the playlist, or null if a song is missing
+				var reorder = function(){
+					var list = MP.user.playlists[pid].content;
+					var moved = [];
+					var rest = [];
+					var insertAt = Math.max(0, Math.min(parseInt(index) || 0, list.length));
+					var newInd = insertAt;
+
+					for (var i = 0; i < list.length; i++){
+						if (cid.indexOf(list[i].cid) != -1){
+							moved.push(list[i]);
+							if (i < newInd) insertAt--;
+						} else {
+							rest.push(list[i]);
+						}
+					}
+
+					if (moved.length != cid.length) return null;
+
+					return rest.slice(0, insertAt).concat(moved, rest.slice(insertAt));
+				};
+
+				var preview = reorder();
+
+				if (!preview){
+					console.log('Cannot find CID in playlist specified');
+					if (callback) callback('SongNotInPlaylist');
+					return;
+				}
+
+				// Nothing would change
+				if (!preview.some(function(a, i){ return a !== content[i]; })) return;
+
+				obj.id = MP.addCallback(obj.type, function(err, data){
+					MP.togglePlaylistLoading(false);
+
+					if (err){ if (callback) callback(err); console.log('Could not move songs: ' + err); return;}
+
+					var result = reorder();
+
+					if (result){
+						var list = MP.user.playlists[pid].content;
+						list.splice.apply(list, [0, list.length].concat(result));
+					}
+					MP.applyModels();
+
+					if (callback) callback(err, data);
+				});
+
+				socket.sendJSON(obj);
+
+				MP.togglePlaylistLoading(true);
+				return;
+			}
+
 			for (var i = 0; i < content.length; i++){
 				if (content[i].cid == cid){
 					ind = i;
@@ -6148,6 +6301,13 @@
 						MP.playlistDelete( MP.session.viewedPl );
 				}
 			});
+		})
+
+		// Selecting songs: click selects one, ctrl+click adds/removes one, shift+click selects a range
+		.on('click', '.lib-song-list .lib-sng', function(e){
+			if ($(e.target).closest('.nav').length) return;
+
+			MP.songSelection.click($(this).attr('data-cid'), e.ctrlKey || e.metaKey, e.shiftKey);
 		})
 
 		// Removing song

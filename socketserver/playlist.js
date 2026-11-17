@@ -193,6 +193,50 @@ Playlist.prototype.moveSong = function(cid, newInd, callback){
 	callback(null, this);
 };
 
+// Moves several songs at once. They end up next to each other, in the order they
+// already had in the playlist, in front of whatever is at newInd right now
+// (newInd == length puts them at the end).
+Playlist.prototype.moveSongs = function(cids, newInd, callback){
+	callback = callback || function(){};
+	var content = this.data.content;
+
+	if (!Array.isArray(cids) || cids.length == 0){
+		callback('PropsMissing');
+		return;
+	}
+
+	for (var i = 0; i < cids.length; i++){
+		if (typeof cids[i] !== 'string' || content.indexOf(cids[i]) == -1){
+			callback('SongNotInPlaylist');
+			return;
+		}
+	}
+
+	newInd = parseInt(newInd);
+	if (isNaN(newInd)){
+		callback('InvalidIndex');
+		return;
+	}
+	newInd = Math.max(0, Math.min(newInd, content.length));
+
+	var moved = [];
+	var rest = [];
+	var insertAt = newInd;
+
+	for (var j = 0; j < content.length; j++){
+		if (cids.indexOf(content[j]) != -1){
+			moved.push(content[j]);
+			if (j < newInd) insertAt--;
+		} else {
+			rest.push(content[j]);
+		}
+	}
+
+	this.data.content = rest.slice(0, insertAt).concat(moved, rest.slice(insertAt));
+	this.save();
+	callback(null, this);
+};
+
 Playlist.prototype.shiftToBottom = function(){
 	if (this.data.content.length == 0){
 		//callback('NoSongsInPlaylist');
