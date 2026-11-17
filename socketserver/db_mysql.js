@@ -16,6 +16,7 @@ const _ = require('lodash');
 
 let db = null;
 let pool = null;
+let hasPlaylistOrder = false; // Whether users.playlist_order exists
 
 const MysqlDB = function(){
 	const that = this;
@@ -150,6 +151,16 @@ const MysqlDB = function(){
 				", null, function(err, res){
 					if(err) throw new Error(err);
 					pool.config.connectionLimit = 5;
+
+					// Column for the order users arrange their playlists in (JSON array of playlist ids).
+					// MySQL has no ADD COLUMN IF NOT EXISTS, so an already existing column is fine.
+					that.execute("ALTER TABLE `users` ADD COLUMN `playlist_order` TEXT NULL;", null, function(err){
+						if (err && err.code != 'ER_DUP_FIELDNAME') {
+							log.error('Could not add users.playlist_order, playlist order will not be saved: ' + err);
+							return;
+						}
+						hasPlaylistOrder = true;
+					});
 				});
 			}
 		});
@@ -433,10 +444,15 @@ MysqlDB.prototype.setRoom = function(slug, val, callback) {
 //UserDB
 MysqlDB.prototype.getUserNoLogin = function(uid, callback){
     var that = this;
-	this.execute("SELECT `salt`, `lastdj`, `uptime`, `recovery`, UNIX_TIMESTAMP(`recovery_timeout`) as `recovery_timeout`, `confirmation`, `badge_top`, `badge_bottom`, `created`, `activepl`, `pw`, `un`, `id` FROM `users` WHERE ?", { id: uid, }, function(err, res){
+	this.execute("SELECT " + (hasPlaylistOrder ? "`playlist_order`, " : "") + "`salt`, `lastdj`, `uptime`, `recovery`, UNIX_TIMESTAMP(`recovery_timeout`) as `recovery_timeout`, `confirmation`, `badge_top`, `badge_bottom`, `created`, `activepl`, `pw`, `un`, `id` FROM `users` WHERE ?", { id: uid, }, function(err, res){
         if (err || res.length == 0) { callback('UserNotFound'); return; }
 
         res = res[0];
+
+        var playlistOrder = [];
+        try { playlistOrder = JSON.parse(res.playlist_order) || []; } catch (e) { playlistOrder = []; }
+        if (!Array.isArray(playlistOrder)) playlistOrder = [];
+
         var data = {
             lastdj: res.lastdj ? true : false,
             uptime: res.uptime,
@@ -450,6 +466,7 @@ MysqlDB.prototype.getUserNoLogin = function(uid, callback){
                 bottom: res.badge_bottom,
             },
             playlists: [],
+            playlistOrder: playlistOrder,
             created: res.created,
             activepl: res.activepl,
             pw: res.pw,
@@ -593,6 +610,8 @@ MysqlDB.prototype.putUser = function(email, data, callback) {
     delete newData.badge;
     delete newData.playlists;
     delete newData.blocked;
+    if (hasPlaylistOrder) newData.playlist_order = JSON.stringify(newData.playlistOrder || []);
+    delete newData.playlistOrder;
 
     this.execute("INSERT INTO `users`(??) VALUES(?) ON DUPLICATE KEY UPDATE ?; DELETE FROM `user_blocks` WHERE ?;", [ Object.keys(newData), _.values(newData), newData, { from: data.uid } ], function(err, res) {
         if(err)

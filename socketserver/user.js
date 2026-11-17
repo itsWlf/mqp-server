@@ -12,6 +12,7 @@ var defaultObj = function(){
 		activepl: null,
 		created: 0,
 		playlists: [],
+		playlistOrder: [], // Playlist ids in the order the user arranged them, empty = sorted by name
 		playlistCache: {},
 		badge: { top: '#000000', bottom: '#000000' },
 		confirmation: null,
@@ -32,6 +33,7 @@ var fieldsNotSent = [
 	'pw',
 	'activepl',
 	'playlists',
+	'playlistOrder',
 	'playlistCache',
 	'recovery',
 	'confirmation',
@@ -148,7 +150,8 @@ User.prototype.addPlaylist = function (name, callback) {
 			return;
 		}
 		that.data.playlists.push(pl.id);
-		
+		if (that.data.playlistOrder.length) that.data.playlistOrder.push(pl.id);
+
 		that.data.playlistCache[pl.id] = pl;
 		
 		if (that.data.playlists.length == 1) 
@@ -165,7 +168,8 @@ User.prototype.removePlaylist = function (pid, callback) {
 	if (plIndex > -1) {
 		this.data.playlistCache[ pid ];
 		this.data.playlists.splice(plIndex, 1);
-		
+		this.data.playlistOrder = this.data.playlistOrder.filter(function(a){ return a != pid; });
+
 		DB.deletePlaylist(pid);
 		if (this.data.activepl == pid){
 			if (this.data.playlists.length > 0){
@@ -181,6 +185,33 @@ User.prototype.removePlaylist = function (pid, callback) {
 	}
 	
 	callback('PlaylistNotFound');
+};
+
+// Saves the order the user wants their playlists listed in.
+// order has to contain every playlist of the user exactly once.
+User.prototype.setPlaylistOrder = function (order, callback) {
+	var owned = this.data.playlists;
+
+	if (!Array.isArray(order)) {
+		callback('PropsMissing');
+		return;
+	}
+
+	order = order.map(function(a){ return parseInt(a); });
+
+	var valid = order.length == owned.length && order.every(function(pid, i){
+		return owned.indexOf(pid) != -1 && order.indexOf(pid) == i;
+	});
+
+	if (!valid) {
+		callback('InvalidPlaylistOrder');
+		return;
+	}
+
+	this.data.playlistOrder = order;
+	this.updateUser();
+
+	callback(null, order);
 };
 
 User.prototype.addBlockedUser = function(uid, callback) {

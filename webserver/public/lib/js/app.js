@@ -75,6 +75,51 @@
 
 			MP.songSelection.sync();
 
+			// Dragging a playlist up or down changes where it is listed
+			$('.lib-fdr-list .lib-fdr:not(.ui-draggable-dragging)').draggable({
+				appendTo: '.lib-fdr-list',
+				helper: function(){
+					return $(this).clone().css({'width': $(this).css('width')});
+				},
+				axis: 'y',
+				opacity: 0.7,
+				zIndex: 100000000,
+				distance: 5,
+				cancel: '.btn-activate-playlist',
+				scroll: true,
+				drag: function(e, ui){
+					var $rows = $('.lib-fdr-list .lib-fdr:not(.ui-draggable-dragging)');
+					var pos = 0;
+
+					// Position in the list the mouse is at: in front of the first row it is above the middle of
+					$rows.removeClass('drop-before drop-after').each(function(){
+						if (e.pageY > $(this).offset().top + $(this).outerHeight() / 2) pos++;
+					});
+
+					if (pos < $rows.length)
+						$rows.eq(pos).addClass('drop-before');
+					else
+						$rows.last().addClass('drop-after');
+
+					ui.helper.attr('data-pos', pos);
+				},
+				stop: function(e, ui){
+					var $rows = $('.lib-fdr-list .lib-fdr:not(.ui-draggable-dragging)').removeClass('drop-before drop-after');
+					var pos = parseInt(ui.helper.attr('data-pos'));
+					var pid = $(this).attr('data-pid');
+					var order = $rows.map(function(){ return $(this).attr('data-pid'); }).get();
+					var from = order.indexOf(pid);
+
+					// Not moved, or dropped where it already is
+					if (isNaN(pos) || from == -1 || pos == from || pos == from + 1) return;
+
+					order.splice(from, 1);
+					order.splice((pos > from ? pos - 1 : pos), 0, pid);
+
+					MP.playlistReorder(order);
+				}
+			});
+
 			if (MP.session.viewedPl && MP.models.viewedPlContents.length){
 				var $song = $('.lib-sng');
 
@@ -82,7 +127,7 @@
 					appendTo: 'div.library',
 					helper: function(){
 						var $helper = $(this).clone().css({'width': $(this).css('width'), 'font-weight': 'bold'});
-						var dragged = MP.songSelection.dragged($(this).attr('data-cid'));
+						var dragged = MP.songSelection.withSelection($(this).attr('data-cid'));
 
 						// Dragging a whole selection: one row standing in for all of them
 						if (dragged.length > 1){
@@ -111,7 +156,7 @@
 							drop: function(e, ui){
 								var pid = $(this).attr('data-pid');
 								var cid = $(ui.draggable).attr('data-cid');
-								var dragged = MP.songSelection.dragged(cid);
+								var dragged = MP.songSelection.withSelection(cid);
 
 								// Several songs: add them in one request, keeping their order
 								if (dragged.length > 1){
@@ -197,7 +242,7 @@
 						var $songDrop = $('.lib-sng-drop');
 
 						if (!$songDrop.is(':hidden')){
-							var dragged = MP.songSelection.dragged(ui.helper.attr('data-cid'));
+							var dragged = MP.songSelection.withSelection(ui.helper.attr('data-cid'));
 
 							MP.playlistMove(MP.session.viewedPl, (dragged.length > 1 ? dragged : dragged[0]), $('.lib-sng-drop').attr('data-pos'));
 						}
@@ -247,8 +292,8 @@
 			isSelected: function(cid){
 				return this.cids.indexOf(cid) != -1;
 			},
-			// What a drag of this song moves: the whole selection if the song is part of it
-			dragged: function(cid){
+			// What an action on this song applies to: the whole selection if the song is part of it
+			withSelection: function(cid){
 				var that = this;
 
 				if (!this.isSelected(cid)) return [ cid ];
@@ -3260,6 +3305,7 @@
 
 				if (err){console.log('Could not add playlist: ' + err); if (callback) callback(err, data); return;}
 				MP.user.playlists[data.id] = data.playlist;
+				if (MP.user.playlistOrder && MP.user.playlistOrder.length) MP.user.playlistOrder.push(parseInt(data.id));
 				var onlyPlaylist = true;
 
 				for (var i in MP.user.playlists)
@@ -3307,6 +3353,41 @@
 			MP.togglePlaylistLoading(true);
 		},
 
+		// order: ids of all playlists, in the order they should be listed
+		playlistReorder: function(order, callback){
+			var previous = MP.user.playlistOrder || [];
+			var obj = {
+				type: 'playlistReorder',
+				data: {
+					order: order.map(function(a){ return parseInt(a); })
+				}
+			};
+
+			obj.id = MP.addCallback(obj.type, function(err, data){
+				MP.togglePlaylistLoading(false);
+
+				if (err){
+					console.log('Could not reorder playlists: ' + err);
+					MP.user.playlistOrder = previous;
+					MP.applyModels();
+					if (callback) callback(err);
+					return;
+				}
+
+				MP.user.playlistOrder = data.order;
+				MP.applyModels();
+
+				if (callback) callback(err, data);
+			});
+
+			// Show the new order right away, it is put back if the server refuses it
+			MP.user.playlistOrder = obj.data.order;
+			MP.applyModels();
+
+			socket.sendJSON(obj);
+			MP.togglePlaylistLoading(true);
+		},
+
 		playlistDelete: function(pid, callback){
 			if (!MP.checkPerm('playlist.delete')) return;
 
@@ -3323,6 +3404,7 @@
 				if (err) {console.log('Could not delete playlist: ' + err); if (callback) callback(err); return;}
 
 				delete MP.user.playlists[pid];
+				MP.user.playlistOrder = (MP.user.playlistOrder || []).filter(function(a){ return a != pid; });
 
 				if (MP.session.viewedPl == pid){
 					MP.session.viewedPl = null;
@@ -3424,6 +3506,40 @@
 
 			var content = MP.user.playlists[pid].content;
 			var ind = null;
+
+			// Several songs at once
+			if (Array.isArray(cid)){
+				var known = content.map(function(a){ return a.cid; });
+
+				if (cid.length == 0 || cid.some(function(a){ return known.indexOf(a) == -1; })){
+					console.log('Cannot find CID in playlist specified');
+					if (callback) callback('SongNotInPlaylist');
+					return;
+				}
+
+				obj.id = MP.addCallback(obj.type, function(err, data){
+					MP.togglePlaylistLoading(false);
+
+					if (err){ if (callback) callback(err); console.log('Could not remove from playlist: ' + err); return;}
+
+					var list = MP.user.playlists[pid].content;
+
+					for (var i = list.length - 1; i >= 0; i--){
+						if (cid.indexOf(list[i].cid) != -1){
+							list.splice(i, 1);
+							MP.user.playlists[pid].num--;
+						}
+					}
+					MP.applyModels();
+
+					if (callback) callback(err, data);
+				});
+
+				socket.sendJSON(obj);
+
+				MP.togglePlaylistLoading(true);
+				return;
+			}
 
 			for (var i = 0; i < content.length; i++){
 				if (content[i].cid == cid){
@@ -6313,8 +6429,26 @@
 		// Removing song
 		.on('click', '.btn-remove-song', function(){
 			var $base = $(this).parents('.lib-sng');
+			var pid = MP.session.viewedPl;
+			// The whole selection if the song is part of it
+			var cids = MP.songSelection.withSelection($base.attr('data-cid'));
+			var remove = function(){
+				MP.playlistRemove(pid, (cids.length > 1 ? cids : cids[0]));
+			};
 
-			MP.playlistRemove(MP.session.viewedPl, $base.attr('data-cid'));
+			// Confirmation can be turned off in the settings
+			if (angular.element($('body')).scope().roomSettings.library.confirmDelete === false){
+				remove();
+				return;
+			}
+
+			MP.makeConfirmModal({
+				content: 'Are you sure you want to delete ' + $('<b></b>').text(cids.length > 1 ? cids.length + ' tracks' : $base.find('.text').text()).prop('outerHTML') + ' from this playlist?',
+				dismissable: true,
+				callback: function(res){
+					if (res) remove();
+				}
+			});
 		})
 
 		// Move song to bottom
@@ -7486,7 +7620,19 @@
 			    	items[i].id = i;
 			    	filtered.push(items[i]);
 			    }
+			    // Playlists the user arranged by hand come in that order, the others by name
+			    var order = (MP.user && MP.user.playlistOrder) || [];
+
 			    filtered.sort(function (a, b) {
+			    	var posA = order.indexOf(parseInt(a.id));
+			    	var posB = order.indexOf(parseInt(b.id));
+
+			    	if (posA != posB){
+			    		if (posA == -1) return 1;
+			    		if (posB == -1) return -1;
+			    		return posA - posB;
+			    	}
+
 			    	return (a[field].localeCompare(b[field]));
 			    });
 			    if(reverse) filtered.reverse();
@@ -7700,6 +7846,7 @@
 				chatlimit: 512,
 				library: {
 					thumbnails: false,
+					confirmDelete: true,
 				},
                 shortcuts: true,
                 notifications: {

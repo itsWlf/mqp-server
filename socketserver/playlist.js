@@ -178,6 +178,28 @@ Playlist.prototype.removeSong = function(cid, callback){
 	callback(null, this);
 };
 
+// Removes several songs at once, or none if one of them isn't in the playlist
+Playlist.prototype.removeSongs = function(cids, callback){
+	callback = callback || function(){};
+	var content = this.data.content;
+
+	if (!Array.isArray(cids) || cids.length == 0){
+		callback('PropsMissing');
+		return;
+	}
+
+	for (var i = 0; i < cids.length; i++){
+		if (typeof cids[i] !== 'string' || content.indexOf(cids[i]) == -1){
+			callback('SongNotInPlaylist');
+			return;
+		}
+	}
+
+	this.data.content = content.filter(function(cid){ return cids.indexOf(cid) == -1; });
+	this.save();
+	callback(null, this);
+};
+
 Playlist.prototype.moveSong = function(cid, newInd, callback){
 	callback = callback || function(){};
 	var ind = this.data.content.indexOf(cid);

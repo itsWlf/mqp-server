@@ -1829,6 +1829,34 @@ var SocketServer = function(server){
 					});
 
 					break;
+				case 'playlistReorder':
+					/*
+					 Expects {
+					 	type: 'playlistReorder',
+						data: {
+							order: [pid, pid, ...]	All playlists of the user, in the new order
+						}
+					 }
+					*/
+
+					socket.user.setPlaylistOrder(data.data.order, function(err, order){
+						if (err){
+							returnObj.data = {
+								error: err
+							};
+							socket.sendJSON(returnObj);
+							return;
+						}
+
+						returnObj.data = {
+							success: true,
+							order: order
+						};
+
+						socket.sendJSON(returnObj);
+					});
+
+					break;
 				case 'playlistRename':
 					/*
 					 Expects {
@@ -2068,7 +2096,11 @@ var SocketServer = function(server){
 							break;
 						}
 
-						if ( that.room.queue.isPlaying(socket) && socket.user.activepl == data.data.pid && pl.data.content.length == 1){
+						// cid may be an array to remove several songs at once
+						var removing = Array.isArray(data.data.cid) ? data.data.cid : [ data.data.cid ];
+						var songsLeft = pl.data.content.filter(function(cid){ return removing.indexOf(cid) == -1; }).length;
+
+						if ( that.room.queue.isPlaying(socket) && socket.user.activepl == data.data.pid && pl.data.content.length > 0 && songsLeft == 0){
 							returnObj.data = {
 								error: 'CannotRemoveOnlySongWhileWaitlisted'
 							};
@@ -2076,7 +2108,7 @@ var SocketServer = function(server){
 							break;
 						}
 
-						pl.removeSong(data.data.cid, function(err, pl){
+						pl[Array.isArray(data.data.cid) ? 'removeSongs' : 'removeSong'](data.data.cid, function(err, pl){
 							if (err){
 								returnObj.data = {
 									error: err

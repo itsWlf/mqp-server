@@ -139,8 +139,19 @@ div.minicolors{
 	height: calc(100% - 61px);
 }
 .lib-fdr-list {
+	position: relative;
 	overflow-y: auto;
 	height: calc(100% - 110px);
+}
+.lib-fdr-list .lib-fdr {
+	-webkit-user-select: none;
+	user-select: none;
+}
+.lib-fdr.drop-before {
+	box-shadow: 0 -3px 0 0 #A77DC2;
+}
+.lib-fdr.drop-after {
+	box-shadow: 0 3px 0 0 #A77DC2;
 }
 .lib-fdr.selected {
 	border-right: 3px solid #A77DC2;
